@@ -54,3 +54,4 @@ while True:
           break
     else:
         print("Invalid Input")
+print("okay garmin")
