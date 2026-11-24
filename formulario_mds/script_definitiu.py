@@ -12,6 +12,7 @@ en una interfície de consola interactiva (llibreria `rich`).
     python analisis.py dades.xml        -> analitza un altre fitxer
     python analisis.py --resum          -> imprimeix el resum executiu i surt
     python analisis.py --top 20         -> mostra 20 elements als rànquings
+    python analisis.py --exportar-json  -> exporta les incidències vàlides a incidencies.json i surt
     python analisis.py --debug          -> en cas d'error inesperat, mostra el detall tècnic
 
 Gestió d'errors: el programa NO ha de mostrar mai un traceback de Python. Tots els
@@ -32,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import json
 import os
 import re
 import subprocess
@@ -1101,6 +1103,82 @@ def resum_executiu(console: Console, ctx: Context) -> None:
     vista_temporal(console, ctx)
 
 # ──────────────────────────────────────────────────────────────────────────────
+#  Exportació a JSON
+# ──────────────────────────────────────────────────────────────────────────────
+def exportar_a_json(incidencies_netes: list, ruta_json: Path = BASE_DIR / "incidencies.json") -> None:
+    """
+    Desa les incidències validades a un fitxer JSON gestionant si ja existeix
+    (sobreescriure o afegir sense duplicats).
+    """
+    nous_registres = []
+    for inc in incidencies_netes:
+        # Generem un ID únic combinant la marca de temps, ubicació i model
+        id_unic = f"{inc.marca_temps.strftime('%Y%m%d%H%M%S')}_{inc.ubicacio}_{inc.model}"
+        nous_registres.append({
+            "id": id_unic,
+            "marca_de_temps": inc.marca_temps.strftime("%d/%m/%Y %H:%M:%S"),
+            "data_incidencia": inc.data.strftime("%d/%m/%Y %H:%M:%S"),
+            "ubicacio": inc.ubicacio,
+            "tipus_equip": inc.tipus,
+            "model": inc.model,
+            "resum": inc.resum,
+            "reincident": inc.reincident,
+            "urgencia": inc.urgencia
+        })
+
+    # 1. Comprovem si el fitxer ja existeix
+    if not ruta_json.exists():
+        with open(ruta_json, "w", encoding="utf-8") as f:
+            json.dump(nous_registres, f, indent=4, ensure_ascii=False)
+        print(f"✅ Fitxer '{ruta_json.name}' creat correctament amb {len(nous_registres)} incidències.")
+        return
+
+    # 2. Si JA existeix, preguntem a l'usuari què vol fer
+    print(f"\n⚠️  El fitxer '{ruta_json.name}' ja existeix.")
+    accio = Prompt.ask(
+        "Què vols fer?",
+        choices=["sobreescriure", "afegir", "cancel·lar"],
+        default="afegir"
+    )
+
+    if accio == "cancel·lar":
+        print("❌ Operació cancel·lada.")
+        return
+
+    if accio == "sobreescriure":
+        with open(ruta_json, "w", encoding="utf-8") as f:
+            json.dump(nous_registres, f, indent=4, ensure_ascii=False)
+        print(f"✅ Fitxer sobreescrit amb {len(nous_registres)} incidències.")
+
+    elif accio == "afegir":
+        try:
+            with open(ruta_json, "r", encoding="utf-8") as f:
+                existents = json.load(f)
+        except json.JSONDecodeError:
+            existents = []
+
+        ids_existents = {item.get("id") for item in existents if "id" in item}
+        
+        afegides = 0
+        for reg in nous_registres:
+            if reg["id"] not in ids_existents:
+                existents.append(reg)
+                ids_existents.add(reg["id"])
+                afegides += 1
+
+        with open(ruta_json, "w", encoding="utf-8") as f:
+            json.dump(existents, f, indent=4, ensure_ascii=False)
+        
+        duplicades = len(nous_registres) - afegides
+        print(f"✅ S'han afegit {afegides} incidències noves (s'han ignorat {duplicades} duplicades). Total al fitxer: {len(existents)}.")
+
+
+def vista_exportar_json(console: Console, ctx: Context) -> None:
+    """Funció pont perquè el menú pugui cridar exportar_a_json."""
+    exportar_a_json(ctx.depuracio.valides, ctx.fitxer.parent / "incidencies.json")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 #  Menú interactiu (únic lloc on es mantenen els emojis)
 # ──────────────────────────────────────────────────────────────────────────────
 OPCIONS = {
@@ -1111,6 +1189,7 @@ OPCIONS = {
     "5": ("🏆", "Top d'equips i problemes freqüents", lambda c, ctx: (vista_equips(c, ctx), c.print(), vista_problemes_freq(c, ctx))),
     "6": ("🚦", "Distribució d'urgència i reincidència", lambda c, ctx: (vista_urgencia(c, ctx), c.print(), vista_reincidencia(c, ctx))),
     "7": ("🧹", "Informe de depuració de dades", vista_depuracio),
+    "8": ("💾", "Exportar a incidencies.json", vista_exportar_json),
 }
 
 def mostra_menu(console: Console, ctx: Context) -> None:
@@ -1179,10 +1258,12 @@ def _llegeix_arguments(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("fitxer", nargs="?", default=None, help="Fitxer XML (per defecte: incidencies.xml)")
     parser.add_argument("--resum", action="store_true", help="Mostra el resum executiu i surt")
     parser.add_argument("--top", type=_enter_positiu, default=10, help="Quantitat d'elements dels rànquings")
+    parser.add_argument("--exportar-json", action="store_true",
+                        help="Exporta les incidències vàlides a incidencies.json i surt")
     parser.add_argument("--debug", action="store_true", help="Mostra els errors tècnics complets")
     args, sobrants = parser.parse_known_args(argv)
     if sobrants:
-        coneguts = ["--resum", "--top", "--debug", "--help"]
+        coneguts = ["--resum", "--top", "--exportar-json", "--debug", "--help"]
         pistes = []
         for x in sobrants:
             if x.startswith("-"):
@@ -1192,7 +1273,7 @@ def _llegeix_arguments(argv: list[str] | None) -> argparse.Namespace:
                 pistes.append(f"Argument inesperat '{x}' (només es pot indicar un fitxer; "
                               "si el nom té espais, posa'l entre cometes).")
         raise ErrorAplicacio("Arguments incorrectes.", "\n".join(pistes),
-                             [f"Ús:  python {Path(sys.argv[0]).name} [fitxer.xml] [--resum] [--top N]"])
+                             [f"Ús:  python {Path(sys.argv[0]).name} [fitxer.xml] [--resum] [--top N] [--exportar-json]"])
     return args
 
 def mostra_error(console: Console, e: ErrorAplicacio) -> None:
@@ -1216,6 +1297,13 @@ def _executa(args: argparse.Namespace, console: Console) -> int:
         raise ErrorAplicacio("No hi ha prou memòria per processar el fitxer.", ruta.name)
 
     ctx = Context(ruta, len(registres), depuracio, informe, args.top)
+
+    if args.exportar_json:
+        if args.resum:
+            resum_executiu(console, ctx)
+            console.print()
+        vista_exportar_json(console, ctx)
+        return 0
 
     if args.resum or not (sys.stdin.isatty() and sys.stdout.isatty()):
         resum_executiu(console, ctx)
